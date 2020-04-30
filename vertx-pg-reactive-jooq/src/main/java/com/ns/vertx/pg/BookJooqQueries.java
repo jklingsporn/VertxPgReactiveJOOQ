@@ -1,34 +1,27 @@
 package com.ns.vertx.pg;
 
 
-import static com.ns.vertx.pg.jooq.tables.Book.BOOK;
-import static com.ns.vertx.pg.jooq.tables.CategoryBook.CATEGORY_BOOK;
-import static com.ns.vertx.pg.jooq.tables.AuthorBook.AUTHOR_BOOK;
-
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.ns.vertx.pg.jooq.tables.daos.AuthorBookDao;
 import com.ns.vertx.pg.jooq.tables.daos.BookDao;
 import com.ns.vertx.pg.jooq.tables.daos.CategoryBookDao;
 import com.ns.vertx.pg.jooq.tables.pojos.AuthorBook;
 import com.ns.vertx.pg.jooq.tables.pojos.Book;
 import com.ns.vertx.pg.jooq.tables.pojos.CategoryBook;
-
 import io.github.jklingsporn.vertx.jooq.classic.reactivepg.ReactiveClassicGenericQueryExecutor;
-
 import io.github.jklingsporn.vertx.jooq.shared.internal.QueryResult;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static com.ns.vertx.pg.jooq.tables.AuthorBook.*;
+import static com.ns.vertx.pg.jooq.tables.Book.*;
+import static com.ns.vertx.pg.jooq.tables.CategoryBook.*;
 
 
 public class BookJooqQueries {	
@@ -180,59 +173,42 @@ public class BookJooqQueries {
 	
 	private static Future<Integer> iterateCategoryBook(ReactiveClassicGenericQueryExecutor queryExecutor, 
 			CategoryBookDao categoryBookDAO, Set<Long> categoryUpdatedIds, long bookId) {
-		Promise<Integer> promise = Promise.promise();
-		
-		Future<List<CategoryBook>> existingBCFuture = categoryBookDAO.findManyByBookId(Arrays.asList(bookId));		
-		existingBCFuture.setHandler(ar -> {
-			if (ar.succeeded()) {
-				List<CategoryBook> existingBC = ar.result();
-				existingBC.stream().forEach(System.out::println);	
-				Set<Long> existingBCategoriesIds = existingBC.stream()
-					.map(cb -> cb.getCategoryId())
-					.collect(Collectors.toSet());
-				
-				Set<Long> deleteCategoryIdsSet = existingBCategoriesIds.stream()
-					.filter(catId -> !categoryUpdatedIds.contains(catId))
-					.collect(Collectors.toSet());			
-				
-				LOGGER.info("Going to DELETE next category ids: ");
-				deleteCategoryIdsSet.stream().forEach(System.out::println);
-				
-				Future<Integer> deleteCategoryBookFuture = queryExecutor.execute(dsl -> dsl
-					.deleteFrom(CATEGORY_BOOK)
-					.where(CATEGORY_BOOK.BOOK_ID.eq(Long.valueOf(bookId)))
-					.and(CATEGORY_BOOK.CATEGORY_ID.in(deleteCategoryIdsSet))
-				);							
 
-				Set<Long> toInsertCategoryIdsSet = categoryUpdatedIds.stream()
-					.filter(catId -> !existingBCategoriesIds.contains(catId))
-					.collect(Collectors.toSet());
-				
-				LOGGER.info("Category IDs to insert:");
-				toInsertCategoryIdsSet.stream().forEach(System.out::println);
-				
-				Set<CategoryBook> bookCategories = new HashSet<>();				
-				for (Long catId : toInsertCategoryIdsSet) {
-					CategoryBook cb = new CategoryBook(catId, bookId);
-					bookCategories.add(cb);					
-				}
-				
-				deleteCategoryBookFuture.compose(res -> categoryBookDAO.insert(bookCategories)).setHandler(finalRes -> {
-					if(finalRes.succeeded()) {
-						LOGGER.info("Success, ALL done!");
-						promise.complete(finalRes.result());
-					} else {
-						LOGGER.error("Error, something failed in deleteCategoryBookFuture.compose(..)! Cause: " + finalRes.cause());
-						promise.fail(finalRes.cause());
-					}
-				});								
-				promise.complete();
-			} else {
-				LOGGER.error("categoryBookDAO.findManyByBookId(bookIds) FAILED! Cause: " + ar.cause());
-				promise.fail(ar.cause());
-			}
-		});	
-		return promise.future();
+		return categoryBookDAO
+                .findManyByBookId(Arrays.asList(bookId))
+                .compose(existingBC -> {
+                    existingBC.stream().forEach(System.out::println);
+                    Set<Long> existingBCategoriesIds = existingBC.stream()
+                            .map(cb -> cb.getCategoryId())
+                            .collect(Collectors.toSet());
+
+                    Set<Long> deleteCategoryIdsSet = existingBCategoriesIds.stream()
+                            .filter(catId -> !categoryUpdatedIds.contains(catId))
+                            .collect(Collectors.toSet());
+
+                    LOGGER.info("Going to DELETE next category ids: ");
+                    deleteCategoryIdsSet.stream().forEach(System.out::println);
+
+                    Set<Long> toInsertCategoryIdsSet = categoryUpdatedIds.stream()
+                            .filter(catId -> !existingBCategoriesIds.contains(catId))
+                            .collect(Collectors.toSet());
+
+                    LOGGER.info("Category IDs to insert:");
+                    toInsertCategoryIdsSet.stream().forEach(System.out::println);
+
+                    Set<CategoryBook> bookCategories = new HashSet<>();
+                    for (Long catId : toInsertCategoryIdsSet) {
+                        CategoryBook cb = new CategoryBook(catId, bookId);
+                        bookCategories.add(cb);
+                    }
+
+                    return queryExecutor.execute(dsl -> dsl
+                            .deleteFrom(CATEGORY_BOOK)
+                            .where(CATEGORY_BOOK.BOOK_ID.eq(bookId))
+                            .and(CATEGORY_BOOK.CATEGORY_ID.in(deleteCategoryIdsSet))
+                    ).compose(res -> categoryBookDAO.insert(bookCategories));
+                });
+
 	}
 	
 	// ***************************************************************************************************************
